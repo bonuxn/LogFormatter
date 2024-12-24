@@ -1,5 +1,9 @@
 use clap::Parser;
 use std::path::Path;
+use serde::Deserialize;
+use serde_json;
+use std::fs::File;
+use std::io::Read;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -7,8 +11,22 @@ struct Args {
     /// Name of the person to greet
     #[arg(short, long)]
     file: String,
-
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsJson {
+    file_path: String,
+    target_words: TargetWords
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TargetWords {
+    words: Vec<String>,
+    reg_ex: bool
+}
+
 
 fn main() {
     let args = Args::parse();
@@ -16,26 +34,18 @@ fn main() {
     println!("Hello {}!", args.file);
 
     let path = Path::new(&args.file);
-}
-
-fn ifJsonFile(path : &Path) -> bool {
-    let mut result : bool = false;
-
-    // file check
-    if(!path.is_file()) {
+    if !path.is_file() {
         println!("This is not a file");
-        return result;
+        return;
     }
-    // json check
-    let json: Result<Value, serde_json::Error> = from_reader::<BufReader<File>, Value>(reader);
-    let json = match json {
-        Ok(o) => o,
-        Err(e) => {
-            println!("Failed to parse json.");
-            return Err(Box::new(e));
-        }
-    };
-    result = true;
-    return result;
+    let mut f = File::open(path).expect("file not found");
 
+    let mut contents = String::new();
+    f.read_to_string(&mut contents)
+        // ファイルの読み込み中に問題がありました
+        .expect("something went wrong reading the file");
+    println!("With text:\n{}", contents);
+
+    let setting_json_data: SettingsJson = serde_json::from_str(&contents).expect("JSON was not well-formatted");
+    println!("{:?}", setting_json_data)
 }
