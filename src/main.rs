@@ -1,9 +1,10 @@
+use std::error::Error;
 use clap::Parser;
 use std::path::Path;
 use serde::Deserialize;
 use serde_json;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -47,5 +48,22 @@ fn main() {
     println!("With text:\n{}", contents);
 
     let setting_json_data: SettingsJson = serde_json::from_str(&contents).expect("JSON was not well-formatted");
-    println!("{:?}", setting_json_data)
+    println!("{:?}", setting_json_data);
+
+    // target file check
+    let path = Path::new(&setting_json_data.file_path);
+    let display = path.display();
+    if !path.is_file() {
+        println!("This is not a file");
+        return;
+    }
+    let f = match File::open(&path) {
+        Err(why) => panic!("couldn't open {}: {}", display,
+                           why.description()),
+        Ok(file) => file,
+    };
+    let reader = BufReader::new(f);
+    for line in reader.lines() {
+        println!("{}", line.unwrap());
+    }
 }
