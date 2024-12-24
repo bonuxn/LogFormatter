@@ -1,4 +1,4 @@
-use std::error::Error;
+
 use clap::Parser;
 use std::path::Path;
 use serde::Deserialize;
@@ -58,8 +58,8 @@ fn main() {
         return;
     }
     let f = match File::open(&path) {
-        Err(why) => panic!("couldn't open {}: {}", display,
-                           why.description()),
+        Err(_0) => panic!("couldn't open {}: {}", display,
+                          display.to_string()),
         Ok(file) => file,
     };
     let reader = BufReader::new(f);
