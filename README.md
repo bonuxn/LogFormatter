@@ -8,7 +8,7 @@
 ```json
 {
   "filePath" : "filePath",
-  "targetWord" : {
+  "targetWords" : {
     "words"  : ["word1","word2"],
     "regEx" : false
   }
@@ -29,4 +29,10 @@ targetにhitした単語を以下の列で、csv形式で出力する
 - date
 - time
 - word
-- 
+
+## build
+
+```cmd
+  # build
+  cargo build --release
+```

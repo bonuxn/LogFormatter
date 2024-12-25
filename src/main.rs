@@ -3,7 +3,7 @@ use clap::Parser;
 use std::path::Path;
 use serde::Deserialize;
 use serde_json;
-use std::fs::File;
+use std::fs::{read_to_string, File};
 use std::io::{BufRead, BufReader, Read};
 
 #[derive(Parser, Debug)]
@@ -57,13 +57,25 @@ fn main() {
         println!("This is not a file");
         return;
     }
-    let f = match File::open(&path) {
-        Err(_0) => panic!("couldn't open {}: {}", display,
-                          display.to_string()),
-        Ok(file) => file,
-    };
-    let reader = BufReader::new(f);
-    for line in reader.lines() {
-        println!("{}", line.unwrap());
+    let lines = read_lines(&path.display().to_string());
+    let mut hitData : Vec<String> = Vec::new();
+    for line in lines {
+        for targetWord in setting_json_data.target_words.words.iter() {
+            if line.contains(targetWord) {
+                println!("{}",line);
+            } else {
+                // no hit
+            }
+        }
     }
+
+    // read 1line on file and search TargetWords
+}
+
+fn read_lines(filename: &str) -> Vec<String> {
+    read_to_string(filename)
+        .unwrap()  // panic on possible file-reading errors
+        .lines()  // split the string into an iterator of string slices
+        .map(String::from)  // make each slice into a string
+        .collect()  // gather them together into a vector
 }
