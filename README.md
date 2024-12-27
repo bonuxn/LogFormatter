@@ -11,7 +11,9 @@
   "targetWords" : {
     "words"  : ["word1","word2"],
     "regEx" : false
-  }
+  },
+  "dateFormat": "(\\d{4})-(\\d{2})-(\\d{2})",
+  "timeFormat": "(\\d{2}):(\\d{2}):(\\d{2}\\.(\\d{3})"
 }
 ```
 
