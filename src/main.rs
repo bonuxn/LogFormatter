@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::env;
 use regex::Regex;
 use chrono::prelude::{DateTime, Local};
+use csv::{WriterBuilder, Writer};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -34,6 +35,13 @@ struct TargetWords {
     reg_ex: bool
 }
 const BOM: &[u8; 3] = &[0xEF, 0xBB, 0xBF];
+
+#[derive(Debug)]
+struct Csv_data {
+    date: String,
+    time: String,
+    data: String,
+}
 
 fn main() {
     let args = Args::parse();
@@ -65,7 +73,7 @@ fn main() {
     }
 
     let lines = read_lines(&path.display().to_string());
-    let mut hit_data : HashMap<u64,String> = HashMap::new();
+    let mut hit_data : Vec<Csv_data> = vec![];
     let mut hit_data_no :u64 = 1;
     let target_words : Vec<String> = setting_json_data.target_words.words;
     let date_format : String = setting_json_data.date_format;
@@ -73,7 +81,7 @@ fn main() {
 
     println!("dateFormat={},timeFormat={}",date_format,time_format);
 
-    hit_data.insert(hit_data_no,format!("{}{}{}{}{}","date","\t", "time","\t","data"));
+    hit_data.push(Csv_data {date: "date".to_string(),time: "time".to_string(),data : "data".to_string()});
 
     // search target word -> input hitData
     let regex_date = Regex::new(&date_format).expect("Invalid date format regex");
@@ -88,9 +96,7 @@ fn main() {
                     let time_caps = regex_time.captures(&line).unwrap();
                     let date_data = date_caps.get(0).unwrap().as_str();
                     let time_data = time_caps.get(0).unwrap().as_str();
-                    let csv_data = format!("{} {} {} {} {}", date_data, "\t", time_data, "\t", &line);
-                    hit_data.insert(hit_data_no,csv_data);
-                    println!("{} : {} : {}",date_data,time_data,line);
+                    hit_data.push(Csv_data{ date: date_data.to_string(), time: time_data.to_string(), data: line.to_string() });
                 }
             } else {
                 // no hit
@@ -126,7 +132,7 @@ fn read_lines(filename: &str) -> Vec<String> {
         .collect()  // gather them together into a vector
 }
 
-fn write_csv_file(data: HashMap<u64, String>) -> Result<(), String> {
+fn write_csv_file(records: Vec<Csv_data>) -> Result<(), String> {
     // 出力先ディレクトリを設定
     let output_dir = env::current_dir().unwrap();
     create_directory(&output_dir)?;
@@ -135,13 +141,20 @@ fn write_csv_file(data: HashMap<u64, String>) -> Result<(), String> {
 
     // ファイルパスを生成し、ファイルを作成
     let file_path = output_dir.join(filename + ".csv");
-    let file = File::create(&file_path).map_err(|e| format!("Failed to create file: {}", e))?;
 
-    // ファイル書き込み処理
-    let mut writer = BufWriter::new(file);
-    write_bom(&mut writer)?;
-    write_csv_content(&mut writer, &data)?;
+    // CSVファイルを開く (タブ区切りで設定)
+    let mut wtr = WriterBuilder::new()
+        .delimiter(b'\t') // デリミタをタブに設定
+        .from_writer(File::create(file_path).expect("File can not be created"));
 
+    // データを書き込む
+    for record in records {
+        wtr.write_record(
+            &[record.date.to_string(), record.time.to_string(), record.data.to_string()])
+            .expect("Write record");
+    }
+
+    wtr.flush().expect("File can not be flushed");
     Ok(())
 }
 fn create_directory(path: &Path) -> Result<(), String> {
