@@ -4,12 +4,13 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json;
 use std::fs::{create_dir_all,read_to_string, File};
-use std::io::{BufWriter, Write,BufRead, Read};
+use std::io::{BufWriter, Write, BufRead, Read, BufReader};
 use std::collections::HashMap;
-use std::env;
+use std::{env, fs, io};
 use regex::Regex;
 use chrono::prelude::{DateTime, Local};
 use csv::{WriterBuilder, Writer};
+use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -87,7 +88,8 @@ fn main() {
     let regex_date = Regex::new(&date_format).expect("Invalid date format regex");
     let regex_time = Regex::new(&time_format).expect("Invalid date format regex");
 
-    for line in lines {
+    for line in lines.unwrap().lines() {
+        println!("hit: {}", line);
         for target_word in target_words.iter() {
             if line.contains(target_word) {
                 if regex_date.is_match(&line) && regex_time.is_match(&line) {
@@ -124,12 +126,68 @@ fn extract_date_from_string(input: &str, date_format: &str) -> Option<String> {
     None
 }
 
-fn read_lines(filename: &str) -> Vec<String> {
-    read_to_string(filename)
-        .unwrap()  // panic on possible file-reading errors
-        .lines()  // split the string into an iterator of string slices
-        .map(String::from)  // make each slice into a string
-        .collect()  // gather them together into a vector
+fn read_lines(filepath: &str) -> Result<Vec<String>,io::Error> {
+    let file = File::open(filepath)?;
+    let mut reader = BufReader::new(file);
+
+    // 1. BufReaderのバッファから最初の数バイトを取得してエンコーディングを判別
+    let (first_bytes, _len) = {
+        let buffer = reader.fill_buf()?; // バッファを埋める（実際の読み込みはここで発生）
+        // エンコーディング判別には最初の数バイトで十分なことが多い
+        // ここでは最大1024バイト、またはバッファに存在する全てのバイトを使用
+        let sample_len = buffer.len().min(1024);
+        (buffer[..sample_len].to_vec(), sample_len)
+    };
+
+    let detected_encoding: &'static Encoding;
+
+    // UTF-8としてデコードを試みる
+    let (_, _, had_errors_utf8) = UTF_8.decode(&first_bytes);
+
+    if !had_errors_utf8 {
+        println!("INFO: File '{}' detected as UTF-8 based on initial bytes.", filepath);
+        detected_encoding = UTF_8;
+    } else {
+        println!("INFO: UTF-8 decoding for initial bytes of '{}' contained errors. Attempting Shift-JIS...", filepath);
+        let (_, _, had_errors_sjis) = SHIFT_JIS.decode(&first_bytes);
+
+        if !had_errors_sjis {
+            println!("INFO: File '{}' successfully decoded as Shift-JIS based on initial bytes.", filepath);
+            detected_encoding = SHIFT_JIS;
+        } else {
+            eprintln!("WARNING: Both UTF-8 and Shift-JIS decoding for initial bytes of '{}' contained errors. Defaulting to UTF-8 for line-by-line reading.", filepath);
+            detected_encoding = UTF_8;
+        }
+    }
+
+    // 2. 判別したエンコーディングで、BufReaderを使って行ごとに読み込む
+    let mut lines = Vec::new();
+    let mut decoder = detected_encoding.new_decoder(); // 新しいデコーダーを生成
+    let mut line_buffer = Vec::new(); // バイト列の行を格納するバッファ
+
+    // reader.bytes() を使って、残りのファイル内容をバイト単位で処理
+    // ここで reader は最初の fill_buf() で読み込んだ部分から処理を再開します。
+    for read_line_result in reader.bytes() {
+        let byte = read_line_result?;
+        line_buffer.push(byte);
+
+        // 改行コード (LF: 0x0A, CR: 0x0D) を検出
+        if byte == b'\n' || byte == b'\r' {
+            let (cow, _, _) = decoder.decode_to_string(&line_buffer);
+            lines.push(cow.into_owned());
+            line_buffer.clear();
+            decoder.reset();
+        }
+    }
+
+    // ファイルの終端でバッファに残っているデータがあれば処理 (最後の行など)
+    if !line_buffer.is_empty() {
+        let (cow, _, _) = decoder.decode_to_string(&line_buffer);
+        lines.push(cow.into_owned());
+    }
+
+    Ok(lines)
+
 }
 
 fn write_csv_file(records: Vec<Csv_data>) -> Result<(), String> {
