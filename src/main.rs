@@ -11,6 +11,7 @@ use regex::Regex;
 use chrono::prelude::{DateTime, Local};
 use csv::{WriterBuilder, Writer};
 use encoding_rs::{Encoding, SHIFT_JIS, UTF_8};
+use encoding_rs_io::DecodeReaderBytes;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -73,9 +74,23 @@ fn main() {
         return;
     }
 
-    let lines = read_lines(&path.display().to_string());
+    let mut file_content_lines: Option<Vec<String>> = None; // Option<Vec<String>> で初期化
+
+    let result_lines = read_lines(&path.display().to_string(),None);
+
+    match result_lines {
+        Ok(lines) => {
+            // lines はこのスコープ内でのみ有効
+            // 外側の変数に設定するには、明示的に代入する
+            file_content_lines = Some(lines);
+            println!("ファイル読み込み成功（matchの結果を束縛）");
+        }
+        Err(e) => {
+            eprintln!("ファイル読み込みエラー（matchの結果を束縛）: {}", e);
+            return;
+        }
+    }
     let mut hit_data : Vec<Csv_data> = vec![];
-    let mut hit_data_no :u64 = 1;
     let target_words : Vec<String> = setting_json_data.target_words.words;
     let date_format : String = setting_json_data.date_format;
     let time_format : String = setting_json_data.time_format;
@@ -88,12 +103,10 @@ fn main() {
     let regex_date = Regex::new(&date_format).expect("Invalid date format regex");
     let regex_time = Regex::new(&time_format).expect("Invalid date format regex");
 
-    for line in lines.unwrap().lines() {
-        println!("hit: {}", line);
+    for line in file_content_lines.unwrap().iter()    {
         for target_word in target_words.iter() {
             if line.contains(target_word) {
                 if regex_date.is_match(&line) && regex_time.is_match(&line) {
-                    hit_data_no += 1;
                     let date_caps = regex_date.captures(&line).unwrap();
                     let time_caps = regex_time.captures(&line).unwrap();
                     let date_data = date_caps.get(0).unwrap().as_str();
@@ -109,6 +122,54 @@ fn main() {
     // read 1line on file and search TargetWords
 }
 
+/// ファイルのエンコーディングを UTF-8 または Shift-JIS のどちらかであると推測します。
+/// 優先順位は UTF-8 BOM > UTF-8 (BOMなし) > Shift-JIS です。
+///
+/// # 引数
+/// * `path` - 読み込むファイルのパス
+///
+/// # 戻り値
+/// 推測されたエンコーディング (Encodingオブジェクト) を返します。
+/// どちらにも当てはまらない、または判断が困難な場合は、デフォルトで UTF-8 を返します。
+pub fn guess_encoding_utf8_sjis_priority(path: &str) -> io::Result<&'static Encoding> {
+    let mut file = File::open(path)?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+
+    // 2. UTF-8 としての有効性チェック
+    // decode() は BOM を考慮しますが、ここでは BOM がないと分かっているので、
+    // decode_without_bom_handling() を使って純粋なUTF-8適合性をテストします。
+    // `had_errors` は、不正なバイトシーケンスがあった場合に true になります。
+    let (cow, utf8_had_errors) = UTF_8.decode_without_bom_handling(&contents);
+
+    // 3. Shift-JIS としての有効性チェック
+    let (cow, sjis_had_errors) = SHIFT_JIS.decode_without_bom_handling(&contents);
+
+    println!("UTF-8 エラー: {}, Shift-JIS エラー: {}", utf8_had_errors, sjis_had_errors);
+
+    // 判断ロジック
+    if !utf8_had_errors && !sjis_had_errors {
+        // 両方ともエラーなくデコードできる場合 (例: ASCIIのみのファイル)
+        // 一般的にはUTF-8を優先します。
+        println!("両方エラーなし。UTF-8を優先します。");
+        Ok(UTF_8)
+    } else if !utf8_had_errors {
+        // UTF-8のみエラーなし
+        println!("UTF-8と推測 (エラーなし)。");
+        Ok(UTF_8)
+    } else if !sjis_had_errors {
+        // Shift-JISのみエラーなし
+        println!("Shift-JISと推測 (エラーなし)。");
+        Ok(SHIFT_JIS)
+    } else {
+        // 両方ともエラーがある場合
+        // この場合、どちらのエンコーディングでもない可能性が高いですが、
+        // 強いて選ぶならUTF-8を返します（またはエラーを返す）。
+        // ここではUTF-8を返しますが、ユーザーにエンコーディング選択を促すのがより堅牢です。
+        println!("どちらもエラーあり。UTF-8をフォールバックします。");
+        Ok(UTF_8)
+    }
+}
 
 fn extract_date_from_string(input: &str, date_format: &str) -> Option<String> {
 
@@ -126,68 +187,23 @@ fn extract_date_from_string(input: &str, date_format: &str) -> Option<String> {
     None
 }
 
-fn read_lines(filepath: &str) -> Result<Vec<String>,io::Error> {
+fn read_lines(filepath: &str,encoding_override: Option<&'static Encoding>) -> Result<Vec<String>,io::Error> {
     let file = File::open(filepath)?;
     let mut reader = BufReader::new(file);
 
-    // 1. BufReaderのバッファから最初の数バイトを取得してエンコーディングを判別
-    let (first_bytes, _len) = {
-        let buffer = reader.fill_buf()?; // バッファを埋める（実際の読み込みはここで発生）
-        // エンコーディング判別には最初の数バイトで十分なことが多い
-        // ここでは最大1024バイト、またはバッファに存在する全てのバイトを使用
-        let sample_len = buffer.len().min(1024);
-        (buffer[..sample_len].to_vec(), sample_len)
-    };
+    let mut contents = Vec::new();
+    reader.read_to_end(&mut contents)?; // ファイル全体をバイト列として読み込む
 
-    let detected_encoding: &'static Encoding;
+    let encoding = guess_encoding_utf8_sjis_priority(filepath)?;
+    let (cow_str, _, had_errors) = encoding.decode(&contents);
 
-    // UTF-8としてデコードを試みる
-    let (_, _, had_errors_utf8) = UTF_8.decode(&first_bytes);
-
-    if !had_errors_utf8 {
-        println!("INFO: File '{}' detected as UTF-8 based on initial bytes.", filepath);
-        detected_encoding = UTF_8;
-    } else {
-        println!("INFO: UTF-8 decoding for initial bytes of '{}' contained errors. Attempting Shift-JIS...", filepath);
-        let (_, _, had_errors_sjis) = SHIFT_JIS.decode(&first_bytes);
-
-        if !had_errors_sjis {
-            println!("INFO: File '{}' successfully decoded as Shift-JIS based on initial bytes.", filepath);
-            detected_encoding = SHIFT_JIS;
-        } else {
-            eprintln!("WARNING: Both UTF-8 and Shift-JIS decoding for initial bytes of '{}' contained errors. Defaulting to UTF-8 for line-by-line reading.", filepath);
-            detected_encoding = UTF_8;
-        }
-    }
-
-    // 2. 判別したエンコーディングで、BufReaderを使って行ごとに読み込む
-    let mut lines = Vec::new();
-    let mut decoder = detected_encoding.new_decoder(); // 新しいデコーダーを生成
-    let mut line_buffer = Vec::new(); // バイト列の行を格納するバッファ
-
-    // reader.bytes() を使って、残りのファイル内容をバイト単位で処理
-    // ここで reader は最初の fill_buf() で読み込んだ部分から処理を再開します。
-    for read_line_result in reader.bytes() {
-        let byte = read_line_result?;
-        line_buffer.push(byte);
-
-        // 改行コード (LF: 0x0A, CR: 0x0D) を検出
-        if byte == b'\n' || byte == b'\r' {
-            let (cow, _, _) = decoder.decode_to_string(&line_buffer);
-            lines.push(cow.into_owned());
-            line_buffer.clear();
-            decoder.reset();
-        }
-    }
-
-    // ファイルの終端でバッファに残っているデータがあれば処理 (最後の行など)
-    if !line_buffer.is_empty() {
-        let (cow, _, _) = decoder.decode_to_string(&line_buffer);
-        lines.push(cow.into_owned());
-    }
+    // デコードされた文字列を行に分割
+    let lines: Vec<String> = cow_str
+        .lines() // 改行コードで分割
+        .map(|s| s.to_string())
+        .collect();
 
     Ok(lines)
-
 }
 
 fn write_csv_file(records: Vec<Csv_data>) -> Result<(), String> {
